@@ -28,9 +28,8 @@ def convert_to_mp3_if_needed(file_path):
         return None
 
 def main():
-    print("=" * 50)
-    print("       Bili2Text - B站视频转文字工具")
-    print("=" * 50)
+    from banner import show_banner
+    show_banner()
     
     # 直接输入BV号（默认流程）
     print("\n直接输入BV号开始转写，或输入以下命令：")
