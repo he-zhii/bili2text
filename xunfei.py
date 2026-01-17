@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+"""
+讯飞语音转写 API
+使用 raasr.xfyun.cn API + 公众号风格排版
+
+配置方式：
+1. 复制 .env.example 为 .env
+2. 填入你的讯飞 APPID 和 SecretKey
+"""
 import base64
 import hashlib
 import hmac
@@ -6,128 +14,339 @@ import json
 import os
 import time
 import requests
-import urllib
+import urllib.parse
+import re
+from dotenv import load_dotenv
 
-lfasr_host = 'https://raasr.xfyun.cn/v2/api'
-# 请求的接口名
-api_upload = '/upload'
-api_get_result = '/getResult'
+# 加载环境变量
+load_dotenv()
+
+# API配置（从.env读取）
+XUNFEI_HOST = 'https://raasr.xfyun.cn/v2/api'
+XUNFEI_APPID = os.getenv('XUNFEI_APPID', '')
+XUNFEI_SECRET_KEY = os.getenv('XUNFEI_SECRET_KEY', '')
+
+if not XUNFEI_APPID or not XUNFEI_SECRET_KEY:
+    print("警告：未找到讯飞API密钥，请检查.env文件")
 
 
 class RequestApi(object):
+    """讯飞语音转写API请求类"""
+    
     def __init__(self, appid, secret_key, upload_file_path):
         self.appid = appid
         self.secret_key = secret_key
         self.upload_file_path = upload_file_path
         self.ts = str(int(time.time()))
-        self.signa = self.get_signa()
+        self.signa = self._get_signa()
 
-    def get_signa(self):
-        appid = self.appid
-        secret_key = self.secret_key
+    def _get_signa(self):
+        """生成签名"""
         m2 = hashlib.md5()
-        m2.update((appid + self.ts).encode('utf-8'))
+        m2.update((self.appid + self.ts).encode('utf-8'))
         md5 = m2.hexdigest()
         md5 = bytes(md5, encoding='utf-8')
-        # 以secret_key为key, 上面的md5为msg， 使用hashlib.sha1加密结果为signa
-        signa = hmac.new(secret_key.encode('utf-8'), md5, hashlib.sha1).digest()
+        signa = hmac.new(self.secret_key.encode('utf-8'), md5, hashlib.sha1).digest()
         signa = base64.b64encode(signa)
-        signa = str(signa, 'utf-8')
-        return signa
-
+        return str(signa, 'utf-8')
 
     def upload(self):
-        print("上传部分：")
-        upload_file_path = self.upload_file_path
-        file_len = os.path.getsize(upload_file_path)
-        file_name = os.path.basename(upload_file_path)
-
-        param_dict = {}
-        param_dict['appId'] = self.appid
-        param_dict['signa'] = self.signa
-        param_dict['ts'] = self.ts
-        param_dict["fileSize"] = file_len
-        param_dict["fileName"] = file_name
-        param_dict["duration"] = "200"
-        print("upload参数：", param_dict)
-        data = open(upload_file_path, 'rb').read(file_len)
-
-        response = requests.post(url =lfasr_host + api_upload+"?"+urllib.parse.urlencode(param_dict),
-                                headers = {"Content-type":"application/json"},data=data)
-        print("upload_url:",response.request.url)
+        """上传音频文件"""
+        file_len = os.path.getsize(self.upload_file_path)
+        file_name = os.path.basename(self.upload_file_path)
+        
+        param_dict = {
+            'appId': self.appid,
+            'signa': self.signa,
+            'ts': self.ts,
+            'fileSize': file_len,
+            'fileName': file_name,
+            'duration': '200'
+        }
+        
+        # 上传中（静默）
+        
+        with open(self.upload_file_path, 'rb') as f:
+            data = f.read()
+        
+        response = requests.post(
+            url=XUNFEI_HOST + '/upload' + "?" + urllib.parse.urlencode(param_dict),
+            headers={"Content-type": "application/json"},
+            data=data
+        )
         result = json.loads(response.text)
-        print("upload resp:", result)
+        
+        if result.get('code') != '000000' and result.get('code') != 0:
+            print(f"上传失败: {result.get('descInfo', '未知错误')}")
+        
         return result
-
 
     def get_result(self):
+        """获取转写结果（轮询）"""
         uploadresp = self.upload()
+        
+        if 'content' not in uploadresp or 'orderId' not in uploadresp.get('content', {}):
+            print(f"上传失败: {uploadresp}")
+            return None
+        
         orderId = uploadresp['content']['orderId']
-        param_dict = {}
-        param_dict['appId'] = self.appid
-        param_dict['signa'] = self.signa
-        param_dict['ts'] = self.ts
-        param_dict['orderId'] = orderId
-        param_dict['resultType'] = "transfer,predict"
-        print("")
-        print("查询部分：")
-        print("get result参数：", param_dict)
-        status = 3
-        # 建议使用回调的方式查询结果，查询接口有请求频率限制
-        while status == 3:
-            response = requests.post(url=lfasr_host + api_get_result + "?" + urllib.parse.urlencode(param_dict),
-                                     headers={"Content-type": "application/json"})
-            # print("get_result_url:",response.request.url)
+        
+        param_dict = {
+            'appId': self.appid,
+            'signa': self.signa,
+            'ts': self.ts,
+            'orderId': orderId,
+            'resultType': 'transfer,predict'
+        }
+        
+        # 等待中（静默）
+        
+        retry_count = 0
+        max_retries = 60
+        
+        while retry_count < max_retries:
+            response = requests.post(
+                url=XUNFEI_HOST + '/getResult' + "?" + urllib.parse.urlencode(param_dict),
+                headers={"Content-type": "application/json"}
+            )
             result = json.loads(response.text)
-            print(result)
-            status = result['content']['orderInfo']['status']
-            print("status=",status)
-            if status == 4:
-                break
-            time.sleep(5)
-        print("get_result resp:",result)
-        return result
+            
+            # 检查响应是否有效
+            if 'content' not in result:
+                print(f"响应异常: {result}")
+                time.sleep(5)
+                retry_count += 1
+                continue
+            
+            # 优先检查是否有转写数据（不管状态码）
+            order_result = result.get('content', {}).get('orderResult', '')
+            if order_result:
+                return result
+            
+            # 没有数据，检查状态
+            order_info = result.get('content', {}).get('orderInfo', {})
+            status = order_info.get('status', 3)
+            
+            if status == 3:
+                # 还在处理中（静默等待）
+                time.sleep(5)
+                retry_count += 1
+            else:
+                # 状态不是3且没有数据，真正失败
+                fail_type = order_info.get('failType', 0)
+                print(f"转写失败 (status={status}, failType={fail_type})")
+                return None
+        
+        print("等待超时")
+        return None
 
 
+def extract_text(result):
+    """从API结果中提取纯文本"""
+    try:
+        order_result_str = result.get('content', {}).get('orderResult', '{}')
+        if not order_result_str:
+            return ""
+        
+        order_result = json.loads(order_result_str)
+        
+        sentences = []
+        for lattice in order_result.get('lattice', []):
+            json_1best_str = lattice.get('json_1best', '{}')
+            json_1best = json.loads(json_1best_str)
+            
+            for rt in json_1best.get('st', {}).get('rt', []):
+                sentence = ''.join([cw.get('w', '') for ws in rt.get('ws', []) for cw in ws.get('cw', [])])
+                sentences.append(sentence)
+        
+        return ''.join(sentences)
+    except Exception as e:
+        print(f"解析结果失败: {e}")
+        return ""
 
 
-# 输入讯飞开放平台的appid，secret_key和待转写的文件路径
+def format_for_wechat(text):
+    """
+    公众号风格排版
+    - 句号后换行
+    - 问号/感叹号后换行  
+    - 短段落（2-3句一段）
+    - 段间空行
+    """
+    if not text:
+        return ""
+    
+    # 检测是否为英文为主（通过字母比例判断）
+    alpha_count = sum(1 for c in text if c.isalpha() and ord(c) < 128)
+    total_chars = len(text.replace(' ', ''))
+    is_english = (alpha_count / max(total_chars, 1)) > 0.5
+    
+    if is_english:
+        # 英文排版
+        # 保留空格，规范化多余空格
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # 在句号、问号、感叹号后换行
+        text = re.sub(r'([.!?])\s*', r'\1\n', text)
+        
+        # 分割成句子
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        
+        # 每2-3句组成一段
+        formatted = []
+        paragraph = []
+        for line in lines:
+            paragraph.append(line)
+            if len(paragraph) >= 3 or line.endswith('?') or line.endswith('!'):
+                formatted.append(' '.join(paragraph))
+                paragraph = []
+        if paragraph:
+            formatted.append(' '.join(paragraph))
+        
+        return '\n\n'.join(formatted)
+    
+    else:
+        # 中文排版
+        # 去除多余空格
+        text = re.sub(r'\s+', '', text)
+        
+        # 在句号、问号、感叹号后添加换行
+        text = re.sub(r'([。！？])', r'\1\n', text)
+        
+        # 分割成句子
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        
+        # 每2-3句组成一段
+        formatted = []
+        paragraph = []
+        for line in lines:
+            paragraph.append(line)
+            if len(paragraph) >= 2 or line.endswith('？') or line.endswith('！'):
+                formatted.append(''.join(paragraph))
+                paragraph = []
+        if paragraph:
+            formatted.append(''.join(paragraph))
+        
+        return '\n\n'.join(formatted)
+
+
+def transcribe_audio_direct(audio_path, output_name=None):
+    """
+    直接上传完整音频文件进行转写 + 公众号排版
+    
+    参数:
+        audio_path: 音频文件路径
+        output_name: 输出文件名（不含扩展名）
+    返回:
+        输出文件路径
+    """
+    if not os.path.exists(audio_path):
+        print(f"错误：音频文件不存在 - {audio_path}")
+        return None
+    
+    # 生成输出文件名
+    if not output_name:
+        output_name = os.path.splitext(os.path.basename(audio_path))[0]
+    output_path = f'outputs/{output_name}_xunfei.txt'
+    
+    print("正在转写，请稍候...")
+    
+    try:
+        # 创建API请求
+        api = RequestApi(
+            appid=XUNFEI_APPID,
+            secret_key=XUNFEI_SECRET_KEY,
+            upload_file_path=audio_path
+        )
+        
+        # 获取结果
+        result = api.get_result()
+        if not result:
+            return None
+        
+        # 提取文本
+        raw_text = extract_text(result)
+        if not raw_text:
+            print("转写结果为空")
+            return None
+        
+        # 公众号风格排版
+        formatted_text = format_for_wechat(raw_text)
+        
+        # 保存结果
+        os.makedirs('outputs', exist_ok=True)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(formatted_text)
+        
+        # 成功后由调用方打印结果
+        
+        return output_path
+        
+    except Exception as e:
+        print(f"转写失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+# ===== 兼容旧接口 =====
+
 def doRequest(folder, filename):
-    api = RequestApi(appid="1a1c1793",
-                     secret_key="***", # 请填写您自己的appid和KEY
-                     upload_file_path=rf"audio/slice/{folder}/{filename}")
+    """切片请求（兼容旧代码）"""
+    api = RequestApi(
+        appid=XUNFEI_APPID,
+        secret_key=XUNFEI_SECRET_KEY,
+        upload_file_path=rf"audio/slice/{folder}/{filename}"
+    )
+    return api.get_result()
 
-    res = api.get_result()
-    print(res)
-    return res
 
-import json
 def extract_and_format_transcription_from_string(json_string):
-    """
-    This function takes a JSON string as input, parses it, 
-    extracts the transcription result, and formats it into a paragraph.
-
-    :param json_string: JSON string containing response data
-    :return: A string representing a formatted paragraph
-    """
-    # Parse the JSON string
+    """从JSON字符串提取转写文本（兼容旧代码）"""
     json_data = json.loads(json_string)
-
-    # Extracting transcription result
     order_result_str = json_data.get("content", {}).get("orderResult", "{}")
     order_result = json.loads(order_result_str)
-
-    # Parsing the transcription result
+    
     sentences = []
     for lattice in order_result.get("lattice", []):
         json_1best_str = lattice.get("json_1best", "{}")
         json_1best = json.loads(json_1best_str)
-        
-        # Extract and process each word
         for rt in json_1best.get("st", {}).get("rt", []):
-            sentence = ''.join([cw[0]["w"] for ws in rt["ws"] for cw in ws["cw"]])
+            sentence = ''.join([cw["w"] for ws in rt["ws"] for cw in ws["cw"]])
             sentences.append(sentence)
+    
+    return ' '.join(sentences)
 
-    # Joining sentences to form a paragraph
-    paragraph = ' '.join(sentences)
-    return paragraph
+
+def run_xunfei_analysis(folder_name, output_name=None):
+    """切片转写（兼容旧代码）+ 公众号排版"""
+    slice_dir = f'audio/slice/{folder_name}'
+    output_name = output_name or folder_name
+    output_path = f'outputs/{output_name}_xunfei.txt'
+    
+    if not os.path.exists(slice_dir):
+        print(f"错误：切片目录不存在 - {slice_dir}")
+        return None
+    
+    slices = [f for f in os.listdir(slice_dir) if f.endswith('.mp3')]
+    slices.sort(key=lambda x: int(x.split('.')[0]))
+    
+    print(f"找到 {len(slices)} 个音频切片，开始讯飞转写...")
+    
+    all_text = []
+    for i, filename in enumerate(slices, 1):
+        print(f"正在处理第 {i}/{len(slices)} 个: {filename}")
+        res = doRequest(folder_name, filename)
+        if res:
+            text = extract_and_format_transcription_from_string(json.dumps(res))
+            all_text.append(text)
+    
+    result = ''.join(all_text)
+    formatted = format_for_wechat(result)
+    
+    os.makedirs('outputs', exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(formatted)
+    
+    print(f"讯飞转写完成！结果已保存到: {output_path}")
+    return output_path

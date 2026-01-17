@@ -47,9 +47,13 @@ def show_log(text, state="INFO"):
 
 def on_submit_click():
     global speech_to_text
-    if speech_to_text is None:
+    engine = engine_var.get()
+    
+    # 检查引擎是否就绪
+    if engine == "Whisper" and speech_to_text is None:
         print("Whisper未加载！请点击加载Whisper按钮。")
         return
+    
     video_link = video_link_entry.get()
     if not video_link:
         print("视频链接不能为空！")
@@ -64,22 +68,44 @@ def on_submit_click():
         return
     bv_number = matches[0]
     print(f"视频链接: {video_link}, BV号: {bv_number}")
-    thread = threading.Thread(target=process_video, args=(bv_number[2:],))
+    print(f"使用引擎: {engine}")
+    thread = threading.Thread(target=process_video, args=(bv_number[2:], engine))
     thread.start()
 
-def process_video(av_number):
-    print("=" * 10)
-    print("正在下载视频...")
-    file_identifier = download_video(str(av_number))
-    print("=" * 10)
-    print("正在分割音频...")
-    # 使用音频模块处理
-    folder_name = process_audio_split(file_identifier)
-    print("=" * 10)
-    print("正在转换文本（可能耗时较长）...")
-    speech_to_text.run_analysis(folder_name, 
-        prompt="以下是普通话的句子。这是一个关于{}的视频。".format(file_identifier))
-    output_path = f"outputs/{folder_name}.txt"
+def process_video(av_number, engine="Whisper"):
+    """处理视频转文字"""
+    file_identifier = "BV" + str(av_number)
+    
+    if engine == "讯飞":
+        # ===== 讯飞优化模式：只下载音频，直接上传，无切片 =====
+        from utils import download_audio_only
+        from xunfei import transcribe_audio_direct
+        
+        print("=" * 10)
+        print("正在下载音频（讯飞优化模式）...")
+        audio_path = download_audio_only(file_identifier)
+        
+        if not audio_path:
+            print("音频下载失败")
+            return
+        
+        print("=" * 10)
+        print("正在使用讯飞转写（直接上传，无切片）...")
+        output_path = transcribe_audio_direct(audio_path, output_name=file_identifier)
+    else:
+        # ===== Whisper模式：需要切片 =====
+        print("=" * 10)
+        print("正在下载视频...")
+        file_identifier = download_video(str(av_number))
+        print("=" * 10)
+        print("正在分割音频...")
+        folder_name = process_audio_split(file_identifier)
+        print("=" * 10)
+        print("正在使用 Whisper 转换文本...")
+        speech_to_text.run_analysis(folder_name, 
+            prompt="以下是普通话的句子。这是一个关于{}的视频。".format(file_identifier))
+        output_path = f"outputs/{folder_name}.txt"
+    
     print("转换完成！", output_path)
 
 def on_generate_again_click():
@@ -181,7 +207,7 @@ def redirect_system_io():
     sys.stderr = StdoutRedirector()
 
 def main():
-    global video_link_entry, log_text, model_var
+    global video_link_entry, log_text, model_var, engine_var
     app = ttk.Window("Bili2Text - By Lanbin | www.lanbin.top", themename="litera")
     app.geometry("820x540")
     app.iconbitmap("favicon.ico")
@@ -206,12 +232,23 @@ def main():
     show_result_button = ttk.Button(controls_frame, text="展示结果", command=on_show_result_click, bootstyle="success-outline")
     show_result_button.pack(side=LEFT, padx=10, pady=10)
     
+    # 引擎选择下拉框
+    engine_var = ttk.StringVar(value="Whisper")
+    engine_label = ttk.Label(controls_frame, text="引擎:")
+    engine_label.pack(side=LEFT, padx=(10, 2), pady=10)
+    engine_combobox = ttk.Combobox(controls_frame, textvariable=engine_var, values=["Whisper", "讯飞"], width=8)
+    engine_combobox.pack(side=LEFT, padx=2, pady=10)
+    engine_combobox.set("Whisper")
+    
+    # Whisper模型选择
     model_var = ttk.StringVar(value="medium")
-    model_combobox = ttk.Combobox(controls_frame, textvariable=model_var, values=["tiny", "small", "medium", "large"])
-    model_combobox.pack(side=LEFT, padx=10, pady=10)
+    model_label = ttk.Label(controls_frame, text="模型:")
+    model_label.pack(side=LEFT, padx=(10, 2), pady=10)
+    model_combobox = ttk.Combobox(controls_frame, textvariable=model_var, values=["tiny", "small", "medium", "large"], width=8)
+    model_combobox.pack(side=LEFT, padx=2, pady=10)
     model_combobox.set("small")
     
-    confirm_model_button = ttk.Button(controls_frame, text="确认模型", command=on_confirm_model_click, bootstyle="primary-outline")
+    confirm_model_button = ttk.Button(controls_frame, text="加载模型", command=on_confirm_model_click, bootstyle="primary-outline")
     confirm_model_button.pack(side=LEFT, padx=10, pady=10)
     
     clear_log_button = ttk.Button(controls_frame, text="清空日志", command=on_clear_log_click, bootstyle=DANGER)
