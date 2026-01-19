@@ -87,19 +87,27 @@ def process_video(bv_number, chat_id):
 def feishu_webhook():
     """飞书事件回调"""
     data = request.json
+    print(f"[飞书] 收到请求: {json.dumps(data, ensure_ascii=False)[:500]}")
     
     # 处理加密消息
-    if 'encrypt' in data:
+    if data and 'encrypt' in data:
         from feishu import decrypt_message
         data = decrypt_message(ENCRYPT_KEY, data['encrypt'])
     
-    # URL 验证（首次配置时飞书会发送）
-    if 'challenge' in data:
+    # URL 验证（首次配置时飞书会发送 challenge）
+    if data and 'challenge' in data:
+        print(f"[飞书] 验证请求，返回 challenge")
         return jsonify({"challenge": data['challenge']})
     
-    # 验证 token
-    if data.get('token') != VERIFICATION_TOKEN:
-        return jsonify({"error": "invalid token"}), 403
+    # 检查 schema 字段（新版飞书 API 格式）
+    if data and data.get('schema') == '2.0':
+        # 新版格式，challenge 可能在 header 中
+        header = data.get('header', {})
+        if 'token' in header:
+            # 验证 token
+            if header.get('token') != VERIFICATION_TOKEN and VERIFICATION_TOKEN:
+                print(f"[飞书] token 验证失败")
+                return jsonify({"code": -1, "msg": "invalid token"}), 403
     
     # 处理事件
     event = data.get('event', {})
