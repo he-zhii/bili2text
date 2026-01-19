@@ -7,6 +7,7 @@ Bili2Text 终端入口
 import os
 import subprocess
 
+
 def convert_to_mp3_if_needed(file_path):
     """如果文件不是讯飞支持的格式，转换为MP3"""
     supported_formats = ['.mp3', '.wav', '.m4a', '.aac', '.mp4', '.flac', '.ogg', '.wma']
@@ -27,20 +28,31 @@ def convert_to_mp3_if_needed(file_path):
         print(f"转换失败: {result.stderr}")
         return None
 
+
 def main():
     from banner import show_banner
+    from cleanup import cleanup_audio_file, cleanup_bv_folder
+    
     show_banner()
     
     # 直接输入BV号（默认流程）
     print("\n直接输入BV号开始转写，或输入以下命令：")
     print("  local  - 使用本地文件")
     print("  whisper - 切换到Whisper引擎")
+    print("  clean  - 清理所有临时文件")
     
     user_input = input("\nBV号或命令: ").strip()
     
     # 判断用户输入
     use_local_file = (user_input.lower() == 'local')
     use_whisper = (user_input.lower() == 'whisper')
+    use_clean = (user_input.lower() == 'clean')
+    
+    # 清理命令
+    if use_clean:
+        from cleanup import cleanup_all
+        cleanup_all()
+        return
     
     if use_local_file:
         file_path = input("请输入文件路径: ").strip().strip('"').strip("'")
@@ -82,40 +94,58 @@ def main():
                 return
         else:
             from utils import download_audio_only
-            print("正在下载...")
-            audio_path = download_audio_only(bv_number)
+            print("\n📥 开始下载音频...")
+            audio_path, video_title = download_audio_only(bv_number)
             if not audio_path:
                 print("❌ 下载失败")
                 return
+            # 使用视频标题作为文件名
+            file_identifier = video_title
+            print(f"\n📺 视频标题: {video_title}")
         
+        print("\n🔄 开始转写...")
         output_path = transcribe_audio_direct(audio_path, output_name=file_identifier)
+        
+        # 自动清理临时文件（讯飞模式，非本地文件）
+        if output_path and not use_local_file:
+            print("\n🗑️  清理临时文件...")
+            cleanup_audio_file(audio_path)
+            cleanup_bv_folder(bv_number)
     
     # ========== Whisper模式 ==========
     else:
         from utils import download_video
         from exAudio import process_audio_split
         from speech2text import load_whisper, run_analysis, is_cuda_available
+        from cleanup import cleanup_temp_audio, cleanup_bv_folder
         
         model = input("\nWhisper模型 (tiny/small/medium/large, 默认small): ").strip() or "small"
         
-        print(f"正在加载Whisper ({model})...")
+        print(f"\n🔄 正在加载Whisper ({model})...")
         load_whisper(model)
         
-        print("正在下载...")
+        print("\n📥 正在下载...")
         file_identifier = download_video(bv_number[2:] if bv_number.startswith("BV") else bv_number)
         
-        print("正在处理音频...")
+        print("\n🎵 正在处理音频...")
         folder_name = process_audio_split(file_identifier)
         
-        print("正在转写，请稍候...")
+        print("\n🔄 正在转写，请稍候...")
         run_analysis(folder_name, prompt="以下是普通话的句子。")
         output_path = f"outputs/{folder_name}.txt"
+        
+        # 自动清理临时文件（Whisper模式）
+        if output_path:
+            print("\n🗑️  清理临时文件...")
+            cleanup_temp_audio()
+            cleanup_bv_folder(bv_number)
     
     # 最终结果
     if output_path:
         print(f"\n✅ 完成！文件已保存: {output_path}")
     else:
         print("\n❌ 转写失败")
+
 
 if __name__ == "__main__":
     main()

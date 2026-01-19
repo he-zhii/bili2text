@@ -17,6 +17,7 @@ import requests
 import urllib.parse
 import re
 from dotenv import load_dotenv
+from progress import ProgressBar, SpinnerProgress, format_size
 
 # 加载环境变量
 load_dotenv()
@@ -51,7 +52,7 @@ class RequestApi(object):
         return str(signa, 'utf-8')
 
     def upload(self):
-        """上传音频文件"""
+        """上传音频文件（带进度条）"""
         file_len = os.path.getsize(self.upload_file_path)
         file_name = os.path.basename(self.upload_file_path)
         
@@ -64,10 +65,15 @@ class RequestApi(object):
             'duration': '200'
         }
         
-        # 上传中（静默）
+        # 显示上传进度
+        progress = ProgressBar(file_len, prefix="上传中")
+        progress.update(0, format_size(file_len))
         
         with open(self.upload_file_path, 'rb') as f:
             data = f.read()
+        
+        # 模拟上传进度（实际是一次性上传）
+        progress.update(file_len // 2, f"{format_size(file_len//2)}/{format_size(file_len)}")
         
         response = requests.post(
             url=XUNFEI_HOST + '/upload' + "?" + urllib.parse.urlencode(param_dict),
@@ -76,17 +82,19 @@ class RequestApi(object):
         )
         result = json.loads(response.text)
         
+        progress.finish("上传完成")
+        
         if result.get('code') != '000000' and result.get('code') != 0:
-            print(f"上传失败: {result.get('descInfo', '未知错误')}")
+            print(f"❌ 上传失败: {result.get('descInfo', '未知错误')}")
         
         return result
 
     def get_result(self):
-        """获取转写结果（轮询）"""
+        """获取转写结果（轮询，带旋转动画）"""
         uploadresp = self.upload()
         
         if 'content' not in uploadresp or 'orderId' not in uploadresp.get('content', {}):
-            print(f"上传失败: {uploadresp}")
+            print(f"❌ 上传失败: {uploadresp}")
             return None
         
         orderId = uploadresp['content']['orderId']
@@ -99,12 +107,15 @@ class RequestApi(object):
             'resultType': 'transfer,predict'
         }
         
-        # 等待中（静默）
+        # 等待转写（带旋转动画）
+        spinner = SpinnerProgress("等待讯飞转写")
         
         retry_count = 0
         max_retries = 60
         
         while retry_count < max_retries:
+            spinner.spin()
+            
             response = requests.post(
                 url=XUNFEI_HOST + '/getResult' + "?" + urllib.parse.urlencode(param_dict),
                 headers={"Content-type": "application/json"}
@@ -113,7 +124,6 @@ class RequestApi(object):
             
             # 检查响应是否有效
             if 'content' not in result:
-                print(f"响应异常: {result}")
                 time.sleep(5)
                 retry_count += 1
                 continue
@@ -121,6 +131,7 @@ class RequestApi(object):
             # 优先检查是否有转写数据（不管状态码）
             order_result = result.get('content', {}).get('orderResult', '')
             if order_result:
+                spinner.done("转写完成")
                 return result
             
             # 没有数据，检查状态
@@ -128,16 +139,16 @@ class RequestApi(object):
             status = order_info.get('status', 3)
             
             if status == 3:
-                # 还在处理中（静默等待）
+                # 还在处理中
                 time.sleep(5)
                 retry_count += 1
             else:
                 # 状态不是3且没有数据，真正失败
                 fail_type = order_info.get('failType', 0)
-                print(f"转写失败 (status={status}, failType={fail_type})")
+                spinner.done(f"转写失败 (status={status})")
                 return None
         
-        print("等待超时")
+        spinner.done("等待超时")
         return None
 
 
@@ -247,7 +258,7 @@ def transcribe_audio_direct(audio_path, output_name=None):
     # 生成输出文件名
     if not output_name:
         output_name = os.path.splitext(os.path.basename(audio_path))[0]
-    output_path = f'outputs/{output_name}_xunfei.txt'
+    output_path = f'outputs/{output_name}.txt'
     
     print("正在转写，请稍候...")
     
@@ -289,64 +300,4 @@ def transcribe_audio_direct(audio_path, output_name=None):
         return None
 
 
-# ===== 兼容旧接口 =====
 
-def doRequest(folder, filename):
-    """切片请求（兼容旧代码）"""
-    api = RequestApi(
-        appid=XUNFEI_APPID,
-        secret_key=XUNFEI_SECRET_KEY,
-        upload_file_path=rf"audio/slice/{folder}/{filename}"
-    )
-    return api.get_result()
-
-
-def extract_and_format_transcription_from_string(json_string):
-    """从JSON字符串提取转写文本（兼容旧代码）"""
-    json_data = json.loads(json_string)
-    order_result_str = json_data.get("content", {}).get("orderResult", "{}")
-    order_result = json.loads(order_result_str)
-    
-    sentences = []
-    for lattice in order_result.get("lattice", []):
-        json_1best_str = lattice.get("json_1best", "{}")
-        json_1best = json.loads(json_1best_str)
-        for rt in json_1best.get("st", {}).get("rt", []):
-            sentence = ''.join([cw["w"] for ws in rt["ws"] for cw in ws["cw"]])
-            sentences.append(sentence)
-    
-    return ' '.join(sentences)
-
-
-def run_xunfei_analysis(folder_name, output_name=None):
-    """切片转写（兼容旧代码）+ 公众号排版"""
-    slice_dir = f'audio/slice/{folder_name}'
-    output_name = output_name or folder_name
-    output_path = f'outputs/{output_name}_xunfei.txt'
-    
-    if not os.path.exists(slice_dir):
-        print(f"错误：切片目录不存在 - {slice_dir}")
-        return None
-    
-    slices = [f for f in os.listdir(slice_dir) if f.endswith('.mp3')]
-    slices.sort(key=lambda x: int(x.split('.')[0]))
-    
-    print(f"找到 {len(slices)} 个音频切片，开始讯飞转写...")
-    
-    all_text = []
-    for i, filename in enumerate(slices, 1):
-        print(f"正在处理第 {i}/{len(slices)} 个: {filename}")
-        res = doRequest(folder_name, filename)
-        if res:
-            text = extract_and_format_transcription_from_string(json.dumps(res))
-            all_text.append(text)
-    
-    result = ''.join(all_text)
-    formatted = format_for_wechat(result)
-    
-    os.makedirs('outputs', exist_ok=True)
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(formatted)
-    
-    print(f"讯飞转写完成！结果已保存到: {output_path}")
-    return output_path
