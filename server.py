@@ -131,8 +131,33 @@ handler = lark.EventDispatcherHandler.builder(
 @app.route("/feishu/webhook", methods=["POST"])
 def event():
     """飞书事件回调入口"""
-    resp = handler.do(parse_req())
-    return parse_resp(resp)
+    try:
+        # 1. 打印原始请求信息，用于调试
+        print(f"\n[飞书] 收到真实请求:")
+        print(f"Headers: {dict(request.headers)}")
+        body = request.get_data(as_text=True)
+        print(f"Body: {body[:500]}")  # 仅打印前500字符
+
+        # 2. 调用 SDK 处理
+        resp = handler.do(parse_req())
+        
+        # 3. 转换响应
+        flask_resp = parse_resp(resp)
+        print(f"[飞书] 处理成功，返回状态码: {flask_resp.status_code}")
+        return flask_resp
+
+    except Exception as e:
+        # 4. 捕获所有异常，强制返回 JSON
+        print(f"❌ [飞书] 处理异常: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # 即使出错也返回 JSON，避免飞书报 "invalid json"
+        return jsonify({
+            "code": -1, 
+            "msg": f"server error: {str(e)}",
+            "challenge": request.json.get("challenge") if request.is_json and request.json else None
+        }), 500
 
 
 @app.route('/health', methods=['GET'])
