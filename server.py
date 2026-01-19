@@ -1,22 +1,27 @@
 # -*- coding: utf-8 -*-
 """
 Bili2Text 飞书机器人服务端
-接收飞书消息 → 提取 BV 号 → 下载转写 → 返回结果
+使用官方 lark_oapi SDK
 """
 import os
 import re
 import json
 import threading
-from flask import Flask, request, jsonify
+from flask import Flask
 from dotenv import load_dotenv
+import lark_oapi as lark
+from lark_oapi.adapter.flask import parse_req, parse_resp
+from lark_oapi.api.im.v1 import *
 
 load_dotenv()
 
 app = Flask(__name__)
 
 # 飞书配置
-VERIFICATION_TOKEN = os.getenv('FEISHU_VERIFICATION_TOKEN', '')
 ENCRYPT_KEY = os.getenv('FEISHU_ENCRYPT_KEY', '')
+VERIFICATION_TOKEN = os.getenv('FEISHU_VERIFICATION_TOKEN', '')
+APP_ID = os.getenv('FEISHU_APP_ID', '')
+APP_SECRET = os.getenv('FEISHU_APP_SECRET', '')
 
 # 已处理的消息 ID（防止重复处理）
 processed_messages = set()
@@ -27,7 +32,6 @@ def extract_bv_number(text):
     patterns = [
         r'BV[A-Za-z0-9]{10}',
         r'bilibili\.com/video/(BV[A-Za-z0-9]+)',
-        r'b23\.tv/([A-Za-z0-9]+)',
     ]
     
     for pattern in patterns:
@@ -75,82 +79,66 @@ def process_video(bv_number, chat_id):
         send_error_card(chat_id, bv_number, str(e)[:100])
 
 
-@app.route('/feishu/webhook', methods=['POST'])
-def feishu_webhook():
-    """飞书事件回调"""
+def do_p2_im_message_receive_v1(data: P2ImMessageReceiveV1) -> None:
+    """处理收到消息事件 (v2.0 版本)"""
+    print(f"[飞书] 收到消息事件")
+    
     try:
-        # 获取原始请求体（用于调试）
-        raw_data = request.get_data(as_text=True)
-        print(f"[飞书] Content-Type: {request.content_type}")
-        print(f"[飞书] 原始请求: {raw_data[:500]}")
-
-        # 尝试解析 JSON
-        data = request.json
-        if not data:
-            print("[飞书] JSON 解析失败")
-            return jsonify({"code": -1, "msg": "invalid json"}), 400
-
-        # 处理加密消息
-        if 'encrypt' in data:
-            from feishu import decrypt_message
-            data = decrypt_message(ENCRYPT_KEY, data['encrypt'])
-
-        # URL 验证（首次配置时飞书会发送 challenge）
-        if 'challenge' in data:
-            challenge = data['challenge']
-            print(f"[飞书] 验证请求，返回 challenge: {challenge}")
-            return jsonify({"challenge": challenge}), 200
-
-        # 检查 schema 字段（新版飞书 API 格式）
-        if data.get('schema') == '2.0':
-            header = data.get('header', {})
-            if 'token' in header and VERIFICATION_TOKEN:
-                if header.get('token') != VERIFICATION_TOKEN:
-                    print(f"[飞书] token 验证失败")
-                    return jsonify({"code": -1, "msg": "invalid token"}), 403
-
-        # 处理事件
-        event = data.get('event', {})
-        event_type = data.get('header', {}).get('event_type', '')
+        message = data.event.message
+        message_id = message.message_id
+        chat_id = message.chat_id
         
-        if event_type == 'im.message.receive_v1':
-            message = event.get('message', {})
-            message_id = message.get('message_id', '')
-            chat_id = message.get('chat_id', '')
-
-            if message_id in processed_messages:
-                return jsonify({"code": 0})
-
-            processed_messages.add(message_id)
-            if len(processed_messages) > 1000:
-                processed_messages.clear()
-
-            msg_type = message.get('message_type', '')
-            if msg_type == 'text':
-                content = json.loads(message.get('content', '{}'))
-                text = content.get('text', '')
-
-                bv_number = extract_bv_number(text)
-                if bv_number:
-                    thread = threading.Thread(
-                        target=process_video,
-                        args=(bv_number, chat_id)
-                    )
-                    thread.start()
-
-        return jsonify({"code": 0})
-
+        # 防止重复处理
+        if message_id in processed_messages:
+            return
+        processed_messages.add(message_id)
+        
+        # 限制缓存大小
+        if len(processed_messages) > 1000:
+            processed_messages.clear()
+        
+        # 解析消息内容
+        if message.message_type == 'text':
+            content = json.loads(message.content)
+            text = content.get('text', '')
+            print(f"[飞书] 收到文本: {text}")
+            
+            # 提取 BV 号
+            bv_number = extract_bv_number(text)
+            if bv_number:
+                print(f"[飞书] 检测到 BV 号: {bv_number}")
+                # 在后台线程中处理
+                thread = threading.Thread(
+                    target=process_video,
+                    args=(bv_number, chat_id)
+                )
+                thread.start()
+                
     except Exception as e:
-        print(f"[飞书] Webhook 异常: {e}")
+        print(f"[飞书] 消息处理错误: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({"code": -1, "msg": "server error"}), 500
+
+
+# 创建事件处理器
+handler = lark.EventDispatcherHandler.builder(
+    ENCRYPT_KEY, 
+    VERIFICATION_TOKEN, 
+    lark.LogLevel.DEBUG
+).register_p2_im_message_receive_v1(do_p2_im_message_receive_v1).build()
+
+
+@app.route("/feishu/webhook", methods=["POST"])
+def event():
+    """飞书事件回调入口"""
+    resp = handler.do(parse_req())
+    return parse_resp(resp)
 
 
 @app.route('/health', methods=['GET'])
 def health():
     """健康检查"""
-    return jsonify({"status": "ok", "service": "bili2text"})
+    return {"status": "ok", "service": "bili2text"}
 
 
 if __name__ == '__main__':
