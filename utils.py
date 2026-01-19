@@ -39,8 +39,18 @@ def download_audio_native(bv_number, output_dir):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': f'https://www.bilibili.com/video/{bv_number}',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Origin': 'https://www.bilibili.com',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
     }
+    
+    # 添加 Cookie 支持 (关键修复 412 错误)
+    cookie = os.getenv('BILIBILI_COOKIE')
+    if cookie:
+        headers['Cookie'] = cookie
     
     try:
         # 1. 获取视频页面
