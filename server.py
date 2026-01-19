@@ -17,11 +17,11 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# 飞书配置
-ENCRYPT_KEY = os.getenv('FEISHU_ENCRYPT_KEY', '')
-VERIFICATION_TOKEN = os.getenv('FEISHU_VERIFICATION_TOKEN', '')
-APP_ID = os.getenv('FEISHU_APP_ID', '')
-APP_SECRET = os.getenv('FEISHU_APP_SECRET', '')
+# 飞书配置（空值时返回 None，SDK 要求）
+ENCRYPT_KEY = os.getenv('FEISHU_ENCRYPT_KEY') or None
+VERIFICATION_TOKEN = os.getenv('FEISHU_VERIFICATION_TOKEN') or None
+APP_ID = os.getenv('FEISHU_APP_ID') or None
+APP_SECRET = os.getenv('FEISHU_APP_SECRET') or None
 
 # 已处理的消息 ID（防止重复处理）
 processed_messages = set()
